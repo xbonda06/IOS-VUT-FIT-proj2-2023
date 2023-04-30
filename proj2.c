@@ -140,6 +140,8 @@ void destroy_semaphores(shared_t *shared_data){
 }
 
 void client_process(int id, shared_t *shared_data, int TZ) {
+    srand(time(NULL) ^ (getpid() << 16));
+
     FILE *file = fopen("proj2.out", "a");
     if (file == NULL) {
         exit(FILE_OPEN_ERROR);
@@ -175,7 +177,7 @@ void client_process(int id, shared_t *shared_data, int TZ) {
 void worker_process(int id, shared_t *shared_data, int TU) {
     FILE *file = fopen("proj2.out", "a");
     if (file == NULL) {
-        exit(FILE_OPEN_ERROR);
+        error_print(FILE_OPEN_ERROR);
         exit(1);
     }
 
@@ -183,6 +185,8 @@ void worker_process(int id, shared_t *shared_data, int TU) {
 
     while (1) {
         int service = rand() % 3 + 1;
+
+
 
         if (sem_trywait(&shared_data->customers_in_queue[service]) == 0) {
             print_action(file, shared_data, "U %d: serving a service of type %d\n", id, service);
@@ -193,6 +197,10 @@ void worker_process(int id, shared_t *shared_data, int TU) {
 
             sem_post(&shared_data->workers_lock);
         } else {
+            if (shared_data->office_closed) {
+                break;
+            }
+
             if (shared_data->office_closed) {
                 break;
             }
