@@ -1,16 +1,10 @@
-// IOS – projekt 2 (synchronizace)
-// Autor: Andrii Bondarenko (xbonda06)
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
-#include <semaphore.h>
+#include <sys/wait.h>
+#include <sys/mman.h>
 #include <time.h>
+#include <semaphore.h>
 #include <stdarg.h>
 
 #define MAX_WAIT_TIME 10000
@@ -26,20 +20,19 @@
 
 typedef struct Arguments {
     int client_amount; // pocet zakazniku - NZ
-    int officials_amount; // pocet uradniku - NU
+    int workers_amount; // pocet uradniku - NU
     int max_waiting_time; // maximalni cas v ms, po ktery zakaznik ceka, nez vejde na postu - TZ
     int max_break_time; // maximalni delka prestavky urednika - TU
     int post_office_close; // cas v ms, po kterem se posta zavre - F
 }arg_t;
 
-typedef struct Shared{
+typedef struct {
     int action_counter;
-    int close_time;
+    int office_closed;
     sem_t mutex;
-    sem_t client_queue[3];
-    sem_t official_break;
-    FILE *file;
-}shared_t;
+    sem_t customers_in_queue[4];
+    sem_t workers_lock;
+} shared_t;
 
 int parse_args(int argc, char *argv[], arg_t *args) {
     if (argc != 6) {
@@ -55,7 +48,7 @@ int parse_args(int argc, char *argv[], arg_t *args) {
                 }
                 break;
             case 2:
-                args->officials_amount = strtol(argv[i], &rest, 10);
+                args->workers_amount = strtol(argv[i], &rest, 10);
                 if(rest[0] != '\0'){
                     return WRONG_FORMAT;
                 }
@@ -117,87 +110,162 @@ void error_print(int error){
     }
 }
 
-void open_file(shared_t *Shared){
-    Shared->file = fopen("prog2.out", "a");
-    if(Shared->file == NULL){
-        error_print(FILE_OPEN_ERROR);
-        exit(1);
-    }
-}
-
-void init_semaphores(shared_t *shared){
-    sem_init(&shared->mutex, 1, 1);
-    sem_init(&shared->official_break, 1, 0);
-    for(int i = 0; i < 3; i++){
-        sem_init(&shared->client_queue[i], 1, 0);
-    }
-}
-
-void print_action(FILE *file, shared_t *shared, const char *format, ...) {
+void print_action(FILE *file, shared_t *shared_data, const char *format, ...) {
     va_list args;
     va_start(args, format);
 
-    sem_wait(&shared->mutex);
-    fprintf(file, "%d: ", ++shared->action_counter);
+    sem_wait(&shared_data->mutex);
+    fprintf(file, "%d: ", ++shared_data->action_counter);
     vfprintf(file, format, args);
     fflush(file);
-    sem_post(&shared->mutex);
+    sem_post(&shared_data->mutex);
 
     va_end(args);
 }
 
-int main(int argc, char *argv[]){
+void semaphores_init(shared_t *shared_data){
+    sem_init(&shared_data->mutex, 1, 1);
+    sem_init(&shared_data->workers_lock, 1, 0);
+    for (int i = 1; i <= 3; ++i) {
+        sem_init(&shared_data->customers_in_queue[i], 1, 0);
+    }
+}
+
+void destroy_semaphores(shared_t *shared_data){
+    sem_destroy(&shared_data->mutex);
+    sem_destroy(&shared_data->workers_lock);
+    for (int i = 1; i <= 3; ++i) {
+        sem_destroy(&shared_data->customers_in_queue[i]);
+    }
+}
+
+void client_process(int id, shared_t *shared_data, int TZ) {
+    FILE *file = fopen("proj2.out", "a");
+    if (file == NULL) {
+        exit(FILE_OPEN_ERROR);
+        exit(1);
+    }
+
+    print_action(file, shared_data, "Z %d: started\n", id);
+
+    usleep(rand() % (TZ + 1));
+
+    if (shared_data->office_closed) {
+        print_action(file, shared_data, "Z %d: going home\n", id);
+    } else {
+        int service = rand() % 3 + 1;
+
+        print_action(file, shared_data, "Z %d: entering office for a service %d\n", id, service);
+
+        sem_post(&shared_data->customers_in_queue[service]);
+
+        sem_wait(&shared_data->workers_lock);
+
+        print_action(file, shared_data, "Z %d: called by office worker\n", id);
+
+        usleep(rand() % 11);
+
+        print_action(file, shared_data, "Z %d: going home\n", id);
+    }
+
+    fclose(file);
+    exit(0);
+}
+
+void worker_process(int id, shared_t *shared_data, int TU) {
+    FILE *file = fopen("proj2.out", "a");
+    if (file == NULL) {
+        exit(FILE_OPEN_ERROR);
+        exit(1);
+    }
+
+    print_action(file, shared_data, "U %d: started\n", id);
+
+    while (1) {
+        int service = rand() % 3 + 1;
+
+        if (sem_trywait(&shared_data->customers_in_queue[service]) == 0) {
+            print_action(file, shared_data, "U %d: serving a service of type %d\n", id, service);
+
+            usleep(rand() % 11);
+
+            print_action(file, shared_data, "U %d: service finished\n", id);
+
+            sem_post(&shared_data->workers_lock);
+        } else {
+            if (shared_data->office_closed) {
+                break;
+            }
+
+            print_action(file, shared_data, "U %d: taking break\n", id);
+
+            usleep(rand() % (TU + 1));
+
+            if (shared_data->office_closed) {
+                break;
+            }
+
+            print_action(file, shared_data, "U %d: break finished\n", id);
+        }
+    }
+
+    print_action(file, shared_data, "U %d: going home\n", id);
+
+    fclose(file);
+    exit(0);
+}
+
+int main(int argc, char *argv[]) {
     arg_t args;
-    shared_t *shared = mmap(NULL, sizeof(shared_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-
-    shared->file = NULL;
-    shared->action_counter = 0;
-    shared->close_time = 0;
-
-
     int error = parse_args(argc, argv, &args);
     if(error != 0){
         error_print(error);
-        return 1;
+        exit(1);
     }
 
     srand(time(NULL));
 
-    open_file(shared);
-    fclose(shared->file);
+    FILE *file = fopen("proj2.out", "w");
+    if(file == NULL){
+        error_print(FILE_OPEN_ERROR);
+        exit(1);
+    }
+    fclose(file);
 
-    init_semaphores(shared);
+    shared_t *shared_data = mmap(NULL, sizeof(shared_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    shared_data->action_counter = 0;
+    shared_data->office_closed = 0;
 
-    for(int i = 1; i <= args.client_amount; ++i){
-        pid_t pid = fork();
-        if(pid == 0){
-            // TODO: client_process(i, shared, args.max_waiting_time);
+    semaphores_init(shared_data);
+
+    for (int i = 1; i <= args.client_amount; ++i) {
+        int pid = fork();
+        if (pid == 0) {
+            client_process(i, shared_data, args.max_waiting_time);
         }
     }
 
-    for(int i = 1; i <= args.officials_amount; ++i){
-        pid_t pid = fork();
-        if(pid == 0){
-            // TODO: official_process(i, shared, args.max_break_time);
+    for (int i = 1; i <= args.workers_amount; ++i) {
+        int pid = fork();
+        if (pid == 0) {
+            worker_process(i, shared_data, args.max_break_time);
         }
     }
 
     usleep((args.post_office_close / 2 + rand() % (args.post_office_close / 2 + 1)) * 1000);
 
-    open_file(shared);
-    print_action(shared->file, shared, "A: closing\n");
-    fclose(shared->file);
+    file = fopen("proj2.out", "a");
+    print_action(file, shared_data, "closing\n");
+    fclose(file);
 
+    shared_data->office_closed = 1;
 
+    int status;
+    while (wait(&status) > 0);
 
+    destroy_semaphores(shared_data);
 
-
-
-
-
-
-
-
+    munmap(shared_data, sizeof(shared_t));
 
     return 0;
 }
