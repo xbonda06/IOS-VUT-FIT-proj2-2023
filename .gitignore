@@ -1,5 +1,6 @@
-CMakeLists.txt
 cmake-build-debug/
 .idea/
 proj2
 proj2.out
+*.zip
+.gitignore

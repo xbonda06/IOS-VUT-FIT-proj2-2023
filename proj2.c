@@ -180,16 +180,11 @@ void client_process(int id, shared_t *shared_data, int max_waiting_time) {
 
     usleep(rand() % (max_waiting_time + 1)); // cekani na prichod do posty
 
-<<<<<<< HEAD
     sem_wait(&shared_data->mutex); // pristup k sdilenym promennym
 
     if (shared_data->office_closed) { // pokud je posta uzavrena
         sem_post(&shared_data->mutex);
         print_action(file, shared_data, "Z %d: going home\n", id); // zakaznik jde domu (zitra je take den)
-=======
-    if (shared_data->office_closed) {
-        print_action(file, shared_data, "Z %d: going home\n", id);
->>>>>>> c5285cc (Debug 3)
         fclose(file);
         exit(0);
     } else {
